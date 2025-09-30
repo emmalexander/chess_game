@@ -10,25 +10,35 @@ class Square extends StatelessWidget {
     this.piece,
     required this.isSelected,
     this.onTap,
+    required this.isValidMove,
   });
-  final bool isWhite, isSelected;
+  final bool isWhite, isSelected, isValidMove;
   final ChessPiece? piece;
   final Function()? onTap;
 
   @override
   Widget build(BuildContext context) {
-    Color? selectedColor;
+    Color? squareColor;
     if (isSelected) {
-      selectedColor = Colors.green;
+      squareColor = Colors.green;
+    } else if (isValidMove) {
+      squareColor = Colors.green[200];
     } else {
-      selectedColor = isWhite ? AppColors.lightShade : AppColors.darkShade;
+      squareColor = isWhite ? AppColors.lightShade : AppColors.darkShade;
     }
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
         curve: Curves.linear,
-        duration: const Duration(milliseconds: 300),
-        color: selectedColor,
+        duration: const Duration(milliseconds: 200),
+        decoration: BoxDecoration(
+          color: squareColor,
+          border: Border.all(
+            color: Colors.black.withAlpha(40),
+            style: BorderStyle.solid,
+            width: 0.5,
+          ),
+        ),
         child: piece != null
             ? PieceSvg.asset(piece!.imagePath, isWhite: piece!.isWhite)
             : null,
