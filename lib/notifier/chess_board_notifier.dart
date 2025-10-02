@@ -505,13 +505,8 @@ class ChessBoardNotifier extends ChangeNotifier {
     _validMoves = [];
 
     // check for checkmate
-    print("Check for Checkmate");
-    print("is CheckMate: ${_isCheckMate(!_isWhiteTurn)}");
-
-    if (_isCheckMate(!_isWhiteTurn)) {
+    if (_isCheckMate(_isWhiteTurn)) {
       //Show dialog box with checkmate message and play again button
-      print("CHECKMATE!!!!");
-      print("navigatorKey.currentContext: ${navigatorKey.currentContext}");
       showDialog(
         context: navigatorKey.currentContext!,
         builder: (context) => AlertDialog.adaptive(
