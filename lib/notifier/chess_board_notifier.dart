@@ -26,6 +26,13 @@ class ChessBoardNotifier extends ChangeNotifier {
   bool _checkStatus = false;
   bool get checkStatus => _checkStatus;
 
+  // Track last moved piece for en passant
+  ChessPiece? _lastMovedPiece;
+  ChessPiece? get lastMovedPiece => _lastMovedPiece;
+
+  List<int>? _lastMoveStart;
+  List<int>? _lastMoveEnd;
+
   /// INITIALIZE THE PIECES
   void initializeBoard() {
     List<List<ChessPiece?>> newBoard = List.generate(
@@ -237,6 +244,23 @@ class ChessBoardNotifier extends ChangeNotifier {
             _board[row + direction][col + 1] != null &&
             _board[row + direction][col + 1]!.isWhite != piece.isWhite) {
           candidateMoves.add([row + direction, col + 1]);
+        }
+
+        // En passant moves
+        if (_lastMovedPiece != null &&
+            _lastMovedPiece!.type == ChessPieceType.pawn &&
+            _lastMovedPiece!.isWhite != piece.isWhite) {
+          // Check if last move was a two-square pawn move
+          if (_lastMoveStart != null &&
+              _lastMoveEnd != null &&
+              (_lastMoveStart![0] - _lastMoveEnd![0]).abs() == 2) {
+            // Check if the enemy pawn is adjacent
+            if (row == (_lastMoveEnd![0]) &&
+                (col - 1 == _lastMoveEnd![1] || col + 1 == _lastMoveEnd![1])) {
+              // Add the en passant capture move
+              candidateMoves.add([row + direction, _lastMoveEnd![1]]);
+            }
+          }
         }
         break;
       case ChessPieceType.rook:
@@ -466,8 +490,28 @@ class ChessBoardNotifier extends ChangeNotifier {
 
   /// MOVE THE PIECE
   void _movePiece(int newRow, int newCol) {
-    // if there is a piece there
-    if (_board[newRow][newCol] != null) {
+    // Store the start position for last move tracking
+    _lastMoveStart = [_selectedRow, _selectedCol];
+    _lastMoveEnd = [newRow, newCol];
+    _lastMovedPiece = _selectedPiece;
+
+    // Check for en passant capture
+    if (_selectedPiece!.type == ChessPieceType.pawn &&
+        _board[newRow][newCol] == null &&
+        newCol != _selectedCol) {
+      // This is a diagonal move to an empty square, must be en passant
+      var capturedPiece = _board[_selectedRow][newCol];
+      if (capturedPiece != null) {
+        if (capturedPiece.isWhite) {
+          _whitePiecesTaken.add(capturedPiece);
+        } else {
+          _blackPiecesTaken.add(capturedPiece);
+        }
+        _board[_selectedRow][newCol] = null; // Remove the captured pawn
+      }
+    }
+    // Regular capture
+    else if (_board[newRow][newCol] != null) {
       // add the piece to either a whiteTaken or blackTaken
       var capturedPiece = _board[newRow][newCol];
       if (_board[newRow][newCol]!.isWhite) {

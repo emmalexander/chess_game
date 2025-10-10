@@ -12,3 +12,6 @@ bool isWhite(index) {
 bool isInBoard(int row, int col) {
   return row >= 0 && row < 8 && col >= 0 && col < 8;
 }
+
+List<String> columnLabels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+List<String> rowLabels = ['8', '7', '6', '5', '4', '3', '2', '1'];

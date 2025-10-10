@@ -78,34 +78,61 @@ class _ChessBoardState extends State<ChessBoard> {
                 Text(_chessBoardNotifier.checkStatus ? "CHECK!" : ""),
                 Expanded(
                   flex: 3,
-                  child: GridView.builder(
-                    itemCount: 8 * 8,
-                    physics: const NeverScrollableScrollPhysics(),
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 8,
-                    ),
-                    itemBuilder: (context, index) {
-                      int row = index ~/ 8;
-                      int column = index % 8;
-                      bool isSelected =
-                          _chessBoardNotifier.selectedRow == row &&
-                          _chessBoardNotifier.selectedCol == column;
+                  child: Stack(
+                    children: [
+                      GridView.builder(
+                        itemCount: 8 * 8,
+                        physics: const NeverScrollableScrollPhysics(),
+                        padding: EdgeInsets.zero,
+                        shrinkWrap: true,
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 8,
+                        ),
+                        itemBuilder: (context, index) {
+                          int row = index ~/ 8;
+                          int column = index % 8;
+                          bool isSelected =
+                              _chessBoardNotifier.selectedRow == row &&
+                              _chessBoardNotifier.selectedCol == column;
 
-                      bool isValid = false;
-                      for (var position in _chessBoardNotifier.validMoves) {
-                        if (position[0] == row && position[1] == column) {
-                          isValid = true;
-                        }
-                      }
-                      return Square(
-                        isWhite: isWhite(index),
-                        piece: _chessBoardNotifier.board[row][column],
-                        isSelected: isSelected,
-                        isValidMove: isValid,
-                        onTap: () =>
-                            _chessBoardNotifier.selectAPiece(row, column),
-                      );
-                    },
+                          bool isValid = false;
+                          for (var position in _chessBoardNotifier.validMoves) {
+                            if (position[0] == row && position[1] == column) {
+                              isValid = true;
+                            }
+                          }
+                          return Square(
+                            isWhite: isWhite(index),
+                            piece: _chessBoardNotifier.board[row][column],
+                            isSelected: isSelected,
+                            isValidMove: isValid,
+                            onTap: () =>
+                                _chessBoardNotifier.selectAPiece(row, column),
+                          );
+                        },
+                      ),
+                      // Positioned(
+                      //   top: 0, // Adjust this value to position the text
+                      //   //left: 20, // Adjust this value to position the text
+                      //   child: ListView.builder(
+                      //     shrinkWrap: true,
+                      //     physics: const NeverScrollableScrollPhysics(),
+                      //     padding: EdgeInsets.zero,
+                      //     itemBuilder: (context, index) {
+                      //       return Text(
+                      //         columnLabels[index],
+                      //         style: TextStyle(
+                      //           color: Colors.white,
+                      //           fontSize: 20,
+                      //           fontWeight: FontWeight.bold,
+                      //         ),
+                      //       );
+                      //     },
+                      //     itemCount: 8,
+                      //     scrollDirection: Axis.horizontal,
+                      //   ),
+                      // ),
+                    ],
                   ),
                 ),
                 //Black Captured Pieces
