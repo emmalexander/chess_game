@@ -76,6 +76,23 @@ class _ChessBoardState extends State<ChessBoard> {
                   ),
                 ),
                 Text(_chessBoardNotifier.checkStatus ? "CHECK!" : ""),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    IconButton(
+                      onPressed: _chessBoardNotifier.moveHistory.isEmpty
+                          ? null
+                          : _chessBoardNotifier.undoMove,
+                      icon: const Icon(Icons.undo, color: Colors.white),
+                    ),
+                    IconButton(
+                      onPressed: _chessBoardNotifier.undoneMoves.isEmpty
+                          ? null
+                          : _chessBoardNotifier.redoMove,
+                      icon: const Icon(Icons.redo, color: Colors.white),
+                    ),
+                  ],
+                ),
                 Expanded(
                   flex: 3,
                   child: Stack(

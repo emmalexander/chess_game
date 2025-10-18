@@ -1,16 +1,25 @@
 import 'package:chess_game/components/piece.dart';
+import 'package:chess_game/helper/database_helper.dart';
 import 'package:chess_game/helper/helper_methods.dart';
+import 'package:chess_game/helper/move_model.dart';
 import 'package:chess_game/utils/navigator_key.dart';
 import 'package:flutter/material.dart';
 
 class ChessBoardNotifier extends ChangeNotifier {
+  final DatabaseHelper _dbHelper = DatabaseHelper();
+  List<Move> _moveHistory = [];
+  List<Move> get moveHistory => _moveHistory;
+
+  List<Move> _undoneMoves = [];
+  List<Move> get undoneMoves => _undoneMoves;
+
   List<List<ChessPiece?>> _board = [];
   List<List<ChessPiece?>> get board => _board;
 
-  List<ChessPiece?> _whitePiecesTaken = [];
+  final List<ChessPiece?> _whitePiecesTaken = [];
   List<ChessPiece?> get whitePiecesTaken => _whitePiecesTaken;
 
-  List<ChessPiece?> _blackPiecesTaken = [];
+  final List<ChessPiece?> _blackPiecesTaken = [];
   List<ChessPiece?> get blackPiecesTaken => _blackPiecesTaken;
 
   bool _isWhiteTurn = false;
@@ -35,6 +44,8 @@ class ChessBoardNotifier extends ChangeNotifier {
 
   /// INITIALIZE THE PIECES
   void initializeBoard() {
+    _loadMoves();
+
     List<List<ChessPiece?>> newBoard = List.generate(
       8,
       (index) => List.generate(8, (index) => null),
@@ -160,6 +171,10 @@ class ChessBoardNotifier extends ChangeNotifier {
     _board = newBoard;
   }
 
+  Future<void> _loadMoves() async {
+    await _dbHelper.clearMoves();
+  }
+
   ChessPiece? _selectedPiece;
   ChessPiece? get selectedPiece => _selectedPiece;
 
@@ -174,6 +189,18 @@ class ChessBoardNotifier extends ChangeNotifier {
 
   /// SELECT A PIECE
   void selectAPiece(int row, int col) {
+    // check if the selected piece is being selected again or a different piece
+    if (_validMoves.isNotEmpty &&
+        _board[row][col] == _selectedPiece &&
+        _board[row][col] != null) {
+      //print(' Clearing selection');
+      _validMoves = [];
+      _selectedCol = -1;
+      _selectedRow = -1;
+      _selectedPiece = null;
+      notifyListeners();
+      return;
+    }
     // No piece has been selected yet, this is the their first selection
     if (_board[row][col] != null && _selectedPiece == null) {
       if (_board[row][col]!.isWhite != _isWhiteTurn) {
@@ -495,31 +522,48 @@ class ChessBoardNotifier extends ChangeNotifier {
     _lastMoveEnd = [newRow, newCol];
     _lastMovedPiece = _selectedPiece;
 
+    ChessPiece? capturedPiece;
+
     // Check for en passant capture
     if (_selectedPiece!.type == ChessPieceType.pawn &&
         _board[newRow][newCol] == null &&
         newCol != _selectedCol) {
       // This is a diagonal move to an empty square, must be en passant
-      var capturedPiece = _board[_selectedRow][newCol];
-      if (capturedPiece != null) {
-        if (capturedPiece.isWhite) {
-          _whitePiecesTaken.add(capturedPiece);
+      var capturedP = _board[_selectedRow][newCol];
+      if (capturedP != null) {
+        if (capturedP.isWhite) {
+          _whitePiecesTaken.add(capturedP);
         } else {
-          _blackPiecesTaken.add(capturedPiece);
+          _blackPiecesTaken.add(capturedP);
         }
         _board[_selectedRow][newCol] = null; // Remove the captured pawn
+        capturedPiece = capturedP;
       }
     }
     // Regular capture
     else if (_board[newRow][newCol] != null) {
       // add the piece to either a whiteTaken or blackTaken
-      var capturedPiece = _board[newRow][newCol];
+      capturedPiece = _board[newRow][newCol];
       if (_board[newRow][newCol]!.isWhite) {
-        _whitePiecesTaken.add(capturedPiece);
+        _whitePiecesTaken.add(capturedPiece!);
       } else {
-        _blackPiecesTaken.add(capturedPiece);
+        _blackPiecesTaken.add(capturedPiece!);
       }
     }
+
+    final move = Move(
+      startRow: _selectedRow,
+      startCol: _selectedCol,
+      endRow: newRow,
+      endCol: newCol,
+      piece: _selectedPiece!,
+      capturedPiece: capturedPiece,
+      isWhiteMove: _isWhiteTurn,
+    );
+
+    _moveHistory.add(move);
+    _dbHelper.insertMove(move.toMap());
+    _undoneMoves.clear();
 
     // Check if the piece being moved is a king
     if (_selectedPiece!.type == ChessPieceType.king) {
@@ -572,6 +616,68 @@ class ChessBoardNotifier extends ChangeNotifier {
     notifyListeners();
   }
 
+  void undoMove() {
+    if (_moveHistory.isEmpty) return;
+
+    final lastMove = _moveHistory.removeLast();
+    _undoneMoves.add(lastMove);
+    _dbHelper.deleteLastMove();
+
+    _board[lastMove.startRow][lastMove.startCol] = lastMove.piece;
+    _board[lastMove.endRow][lastMove.endCol] = lastMove.capturedPiece;
+
+    if (lastMove.capturedPiece != null) {
+      if (lastMove.capturedPiece!.isWhite) {
+        _whitePiecesTaken.remove(lastMove.capturedPiece);
+      } else {
+        _blackPiecesTaken.remove(lastMove.capturedPiece);
+      }
+    }
+
+    if (lastMove.piece.type == ChessPieceType.king) {
+      if (lastMove.piece.isWhite) {
+        _whiteKingPosition = [lastMove.startRow, lastMove.startCol];
+      } else {
+        _blackKingPosition = [lastMove.startRow, lastMove.startCol];
+      }
+    }
+
+    _isWhiteTurn = !_isWhiteTurn;
+    _checkStatus = _isKingInCheck(!_isWhiteTurn);
+    notifyListeners();
+  }
+
+  void redoMove() {
+    if (_undoneMoves.isEmpty) return;
+
+    final move = _undoneMoves.removeLast();
+    _moveHistory.add(move);
+    _dbHelper.insertMove(move.toMap());
+
+    _board[move.endRow][move.endCol] = move.piece;
+    _board[move.startRow][move.startCol] = null;
+
+    if (move.capturedPiece != null) {
+      if (move.capturedPiece!.isWhite) {
+        _whitePiecesTaken.add(move.capturedPiece!);
+      } else {
+        _blackPiecesTaken.add(move.capturedPiece!);
+      }
+    }
+
+    if (move.piece.type == ChessPieceType.king) {
+      if (move.piece.isWhite) {
+        _whiteKingPosition = [move.endRow, move.endCol];
+      } else {
+        _blackKingPosition = [move.endRow, move.endCol];
+      }
+    }
+
+    _isWhiteTurn = !_isWhiteTurn;
+    _checkStatus = _isKingInCheck(!_isWhiteTurn);
+    notifyListeners();
+  }
+
   void _resetGame() {
     Navigator.pop(navigatorKey.currentContext!);
     initializeBoard();
@@ -581,6 +687,9 @@ class ChessBoardNotifier extends ChangeNotifier {
     _blackKingPosition = [0, 4];
     _whiteKingPosition = [7, 4];
     _isWhiteTurn = true;
+    _moveHistory.clear();
+    _undoneMoves.clear();
+    _dbHelper.clearMoves();
     notifyListeners();
   }
 
