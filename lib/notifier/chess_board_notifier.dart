@@ -3,7 +3,10 @@ import 'package:chess_game/helper/database_helper.dart';
 import 'package:chess_game/helper/helper_methods.dart';
 import 'package:chess_game/helper/move_model.dart';
 import 'package:chess_game/utils/navigator_key.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:chess_game/helper/move_isolate.dart' as move_isolate;
+import 'package:chess_game/notifier/chess_rules.dart';
 
 class ChessBoardNotifier extends ChangeNotifier {
   final DatabaseHelper _dbHelper = DatabaseHelper();
@@ -188,7 +191,7 @@ class ChessBoardNotifier extends ChangeNotifier {
   List<List<int>> get validMoves => _validMoves;
 
   /// SELECT A PIECE
-  void selectAPiece(int row, int col) {
+  Future<void> selectAPiece(int row, int col) async {
     // check if the selected piece is being selected again or a different piece
     if (_validMoves.isNotEmpty &&
         _board[row][col] == _selectedPiece &&
@@ -222,223 +225,104 @@ class ChessBoardNotifier extends ChangeNotifier {
         _validMoves.any((element) => element[0] == row && element[1] == col)) {
       _movePiece(row, col);
     }
-    _validMoves = _calculateRealValidMoves(
-      _selectedRow,
-      _selectedCol,
-      _selectedPiece,
-      true,
-    );
+    // Use the isolate-backed move filtering for potentially expensive safety checks
+    if (_selectedPiece != null) {
+      _validMoves = await _calculateRealValidMovesAsync(
+        _selectedRow,
+        _selectedCol,
+        _selectedPiece,
+        true,
+      );
+    } else {
+      _validMoves = [];
+    }
     notifyListeners();
   }
 
-  /// CALCULATE THE MOVES
-  List<List<int>> _calculateRawValidMoves(int row, int col, ChessPiece? piece) {
-    List<List<int>> candidateMoves = [];
-
-    if (piece == null) {
-      return [];
+  // Encode the board into a serializable List<List<int>> for isolates.
+  // Representation: -1 = empty, else code = typeIndex + (isWhite ? 10 : 0)
+  List<List<int>> _encodeBoardForIsolate() {
+    final out = List<List<int>>.generate(8, (_) => List<int>.filled(8, -1));
+    for (var r = 0; r < 8; r++) {
+      for (var c = 0; c < 8; c++) {
+        final piece = _board[r][c];
+        if (piece == null) {
+          out[r][c] = -1;
+          continue;
+        }
+        final typeIndex = (() {
+          switch (piece.type) {
+            case ChessPieceType.king:
+              return 0;
+            case ChessPieceType.queen:
+              return 1;
+            case ChessPieceType.pawn:
+              return 5;
+            case ChessPieceType.knight:
+              return 3;
+            case ChessPieceType.bishop:
+              return 2;
+            case ChessPieceType.rook:
+              return 4;
+          }
+        })();
+        out[r][c] = (piece.isWhite ? 10 : 0) + typeIndex;
+      }
     }
+    return out;
+  }
 
-    int direction = piece.isWhite ? -1 : 1;
+  Future<List<List<int>>> _calculateRealValidMovesAsync(
+    int row,
+    int col,
+    ChessPiece? piece,
+    bool checkSimulation,
+  ) async {
+    if (piece == null) return [];
 
-    switch (piece.type) {
-      case ChessPieceType.pawn:
-        // can move one box at a time if square is not occupied
-        /// row + direction is the row of the next square above the pawn
-        if (isInBoard(row + direction, col) &&
-            _board[row + direction][col] == null) {
-          candidateMoves.add([row + direction, col]);
+    final candidateMoves = ChessRules.calculateRawValidMoves(
+      row: row,
+      col: col,
+      piece: piece,
+      board: _board,
+      moveHistory: _moveHistory,
+      whiteKingPosition: _whiteKingPosition,
+      blackKingPosition: _blackKingPosition,
+      checkCastling: true,
+    );
+
+    if (!checkSimulation) return candidateMoves;
+
+    // Prepare args for isolate
+    final args = {
+      'board': _encodeBoardForIsolate(),
+      'pieceType': (() {
+        switch (piece.type) {
+          case ChessPieceType.king:
+            return 0;
+          case ChessPieceType.queen:
+            return 1;
+          case ChessPieceType.pawn:
+            return 5;
+          case ChessPieceType.knight:
+            return 3;
+          case ChessPieceType.bishop:
+            return 2;
+          case ChessPieceType.rook:
+            return 4;
         }
+      })(),
+      'pieceIsWhite': piece.isWhite,
+      'startRow': row,
+      'startCol': col,
+      'candidateMoves': candidateMoves,
+      'whiteKingPos': _whiteKingPosition,
+      'blackKingPos': _blackKingPosition,
+    };
 
-        // Can move two squares only from the starting point
-        if ((row == 1 && !piece.isWhite) || (row == 6 && piece.isWhite)) {
-          if (isInBoard(row + (2 * direction), col) &&
-              _board[row + direction][col] == null &&
-              _board[row + (2 * direction)][col] == null) {
-            candidateMoves.add([row + (2 * direction), col]);
-          }
-        }
-        // Can kill another piece diagonally
-        // row + direction, col - 1 is for the left diagonal square
-        if (isInBoard(row + direction, col - 1) &&
-            _board[row + direction][col - 1] != null &&
-            _board[row + direction][col - 1]!.isWhite != piece.isWhite) {
-          candidateMoves.add([row + direction, col - 1]);
-        }
-
-        // row + direction, col + 1 is for the right diagonal square
-        if (isInBoard(row + direction, col + 1) &&
-            _board[row + direction][col + 1] != null &&
-            _board[row + direction][col + 1]!.isWhite != piece.isWhite) {
-          candidateMoves.add([row + direction, col + 1]);
-        }
-
-        // En passant moves
-        if (_lastMovedPiece != null &&
-            _lastMovedPiece!.type == ChessPieceType.pawn &&
-            _lastMovedPiece!.isWhite != piece.isWhite) {
-          // Check if last move was a two-square pawn move
-          if (_lastMoveStart != null &&
-              _lastMoveEnd != null &&
-              (_lastMoveStart![0] - _lastMoveEnd![0]).abs() == 2) {
-            // Check if the enemy pawn is adjacent
-            if (row == (_lastMoveEnd![0]) &&
-                (col - 1 == _lastMoveEnd![1] || col + 1 == _lastMoveEnd![1])) {
-              // Add the en passant capture move
-              candidateMoves.add([row + direction, _lastMoveEnd![1]]);
-            }
-          }
-        }
-        break;
-      case ChessPieceType.rook:
-        //Can move horizontally and vertically
-        var directions = [
-          [1, 0], // down
-          [-1, 0], // up
-          [0, 1], // right
-          [0, -1], // left
-        ];
-
-        for (var direction in directions) {
-          var i = 1;
-          while (true) {
-            var newRow = row + i * direction[0];
-            var newCol = col + i * direction[1];
-            if (!isInBoard(newRow, newCol)) {
-              break;
-            }
-            // If the opponent's piece is in the new square
-            if (_board[newRow][newCol] != null) {
-              if (_board[newRow][newCol]!.isWhite != piece.isWhite) {
-                candidateMoves.add([newRow, newCol]); // Kill
-              }
-              break;
-            }
-            candidateMoves.add([newRow, newCol]);
-            i++;
-          }
-        }
-
-        break;
-      case ChessPieceType.knight:
-        //All 8 L shaped moves
-        var knightMoves = [
-          [-2, -1], // up 2 left 1
-          [-1, -2], // up 1 left 2
-          [-2, 1], // up 2 right 1
-          [-1, 2], // up 1 right 2
-          [2, -1], // down 2 left 1
-          [1, -2], // down 1 left 2
-          [2, 1], // down 2 right 1
-          [1, 2], // down 1 right 2
-        ];
-
-        for (var move in knightMoves) {
-          var newRow = row + move[0];
-          var newCol = col + move[1];
-          if (!isInBoard(newRow, newCol)) {
-            continue;
-          }
-          if (_board[newRow][newCol] != null) {
-            if (_board[newRow][newCol]!.isWhite != piece.isWhite) {
-              candidateMoves.add([newRow, newCol]); // Kill
-            }
-            continue; // blocked
-          }
-          candidateMoves.add([newRow, newCol]);
-        }
-        break;
-      case ChessPieceType.bishop:
-        //Can move diagonally
-        var directions = [
-          [-1, -1], // top left
-          [-1, 1], // top right
-          [1, -1], // bottom left
-          [1, 1], // bottom right
-        ];
-
-        for (var direction in directions) {
-          var i = 1;
-          while (true) {
-            var newRow = row + i * direction[0];
-            var newCol = col + i * direction[1];
-            if (!isInBoard(newRow, newCol)) {
-              break;
-            }
-            // If the opponent's piece is in the new square
-            if (_board[newRow][newCol] != null) {
-              if (_board[newRow][newCol]!.isWhite != piece.isWhite) {
-                candidateMoves.add([newRow, newCol]); // Kill
-              }
-              break;
-            }
-            candidateMoves.add([newRow, newCol]);
-            i++;
-          }
-        }
-        break;
-      case ChessPieceType.king:
-        // All 8 directions
-        var directions = [
-          [1, 0], // down
-          [-1, 0], // up
-          [0, 1], // right
-          [0, -1], // left
-          [-1, -1], // top left
-          [-1, 1], // top right
-          [1, -1], // bottom left
-          [1, 1], // bottom right
-        ];
-
-        for (var move in directions) {
-          var newRow = row + move[0];
-          var newCol = col + move[1];
-          if (!isInBoard(newRow, newCol)) {
-            continue;
-          }
-          if (_board[newRow][newCol] != null) {
-            if (_board[newRow][newCol]!.isWhite != piece.isWhite) {
-              candidateMoves.add([newRow, newCol]); // Kill
-            }
-            continue; // blocked
-          }
-          candidateMoves.add([newRow, newCol]);
-        }
-        break;
-      case ChessPieceType.queen:
-        var directions = [
-          [1, 0], // down
-          [-1, 0], // up
-          [0, 1], // right
-          [0, -1], // left
-          [-1, -1], // top left
-          [-1, 1], // top right
-          [1, -1], // bottom left
-          [1, 1], // bottom right
-        ];
-
-        for (var direction in directions) {
-          var i = 1;
-          while (true) {
-            var newRow = row + i * direction[0];
-            var newCol = col + i * direction[1];
-            if (!isInBoard(newRow, newCol)) {
-              break;
-            }
-            // If the opponent's piece is in the new square
-            if (_board[newRow][newCol] != null) {
-              if (_board[newRow][newCol]!.isWhite != piece.isWhite) {
-                candidateMoves.add([newRow, newCol]); // Kill
-              }
-              break;
-            }
-            candidateMoves.add([newRow, newCol]);
-            i++;
-          }
-        }
-        break;
-    }
-    return candidateMoves;
+    // Call the isolate filter
+    final safe = await compute(move_isolate.filterSafeMoves, args);
+    return safe;
   }
 
   List<List<int>> _calculateRealValidMoves(
@@ -447,72 +331,31 @@ class ChessBoardNotifier extends ChangeNotifier {
     ChessPiece? piece,
     bool checkSimulation,
   ) {
-    List<List<int>> realValidMoves = [];
-    List<List<int>> candidateMoves = _calculateRawValidMoves(row, col, piece);
+    List<List<int>> candidateMoves = ChessRules.calculateRawValidMoves(
+      row: row,
+      col: col,
+      piece: piece,
+      board: _board,
+      moveHistory: _moveHistory,
+      whiteKingPosition: _whiteKingPosition,
+      blackKingPosition: _blackKingPosition,
+      checkCastling: true,
+    );
 
     if (checkSimulation) {
+      List<List<int>> realValidMoves = [];
       for (var move in candidateMoves) {
-        var endRow = move[0];
-        var endCol = move[1];
-
-        // This will simulate the future move to see if it is safe
-        if (_simulatedMoveIsSafe(piece!, row, col, endRow, endCol)) {
+        if (ChessRules.simulatedMoveIsSafe(
+          piece!, row, col, move[0], move[1],
+          _board, _whiteKingPosition, _blackKingPosition, _moveHistory,
+        )) {
           realValidMoves.add(move);
         }
       }
+      return realValidMoves;
     } else {
-      realValidMoves = candidateMoves;
+      return candidateMoves;
     }
-    return realValidMoves;
-  }
-
-  bool _simulatedMoveIsSafe(
-    ChessPiece piece,
-    int startRow,
-    int startCol,
-    int endRow,
-    int endCol,
-  ) {
-    //save current board state
-    ChessPiece? originalDestinationPiece = _board[endRow][endCol];
-
-    // if piece is king, save its position and update the new one
-    List<int>? originalKingPosition;
-    if (piece.type == ChessPieceType.king) {
-      originalKingPosition = piece.isWhite
-          ? _whiteKingPosition
-          : _blackKingPosition;
-
-      //update the king's position
-      if (piece.isWhite) {
-        _whiteKingPosition = [endRow, endCol];
-      } else {
-        _blackKingPosition = [endRow, endCol];
-      }
-    }
-
-    // simulate the move
-    _board[endRow][endCol] = piece;
-    _board[startRow][startCol] = null;
-
-    // check is king is under attack
-    bool kingInCheck = _isKingInCheck(piece.isWhite);
-
-    // restore board to original state
-    _board[startRow][startCol] = piece;
-    _board[endRow][endCol] = originalDestinationPiece;
-
-    // if piece was the king restore the original position
-    if (piece.type == ChessPieceType.king) {
-      if (piece.isWhite) {
-        _whiteKingPosition = originalKingPosition!;
-      } else {
-        _blackKingPosition = originalKingPosition!;
-      }
-    }
-
-    // if king is in check, then it is not safe
-    return !kingInCheck;
   }
 
   /// MOVE THE PIECE
@@ -562,7 +405,9 @@ class ChessBoardNotifier extends ChangeNotifier {
     );
 
     _moveHistory.add(move);
-    _dbHelper.insertMove(move.toMap());
+    // Fire-and-forget DB write; catch/log errors to avoid crashing the UI
+    // schedule DB write without awaiting to avoid blocking
+    _dbHelper.insertMove(move.toMap()).catchError((e) {});
     _undoneMoves.clear();
 
     // Check if the piece being moved is a king
@@ -576,6 +421,23 @@ class ChessBoardNotifier extends ChangeNotifier {
     }
 
     // move the piece and clear the old spot
+    // Handle castling: if king moves two columns, move the rook accordingly
+    if (_selectedPiece!.type == ChessPieceType.king &&
+        (_selectedCol - newCol).abs() == 2) {
+      // Kingside or queenside
+      if (newCol == 6) {
+        // Kingside: rook moves from col 7 to col 5
+        final rook = _board[newRow][7];
+        _board[newRow][5] = rook;
+        _board[newRow][7] = null;
+      } else if (newCol == 2) {
+        // Queenside: rook moves from col 0 to col 3
+        final rook = _board[newRow][0];
+        _board[newRow][3] = rook;
+        _board[newRow][0] = null;
+      }
+    }
+
     _board[newRow][newCol] = _selectedPiece;
     _board[_selectedRow][_selectedCol] = null;
 
@@ -592,24 +454,26 @@ class ChessBoardNotifier extends ChangeNotifier {
     _selectedCol = -1;
     _validMoves = [];
 
-    // check for checkmate
-    if (_isCheckMate(_isWhiteTurn)) {
-      //Show dialog box with checkmate message and play again button
-      showDialog(
-        context: navigatorKey.currentContext!,
-        builder: (context) => AlertDialog.adaptive(
-          title: const Text("CHECK MATE!"),
+    // check for checkmate asynchronously to avoid blocking the UI
+    _isCheckMateAsync(_isWhiteTurn).then((isMate) {
+      if (isMate) {
+        //Show dialog box with checkmate message and play again button
+        showDialog(
+          context: navigatorKey.currentContext!,
+          builder: (context) => AlertDialog.adaptive(
+            title: const Text("CHECK MATE!"),
 
-          actions: [
-            //reset the game and play again
-            TextButton(
-              onPressed: () => _resetGame(),
-              child: const Text("PLAY AGAIN"),
-            ),
-          ],
-        ),
-      );
-    }
+            actions: [
+              //reset the game and play again
+              TextButton(
+                onPressed: () => _resetGame(),
+                child: const Text("PLAY AGAIN"),
+              ),
+            ],
+          ),
+        );
+      }
+    });
 
     // change turns
     _isWhiteTurn = !_isWhiteTurn;
@@ -621,7 +485,8 @@ class ChessBoardNotifier extends ChangeNotifier {
 
     final lastMove = _moveHistory.removeLast();
     _undoneMoves.add(lastMove);
-    _dbHelper.deleteLastMove();
+    // schedule DB delete without awaiting to avoid blocking
+    _dbHelper.deleteLastMove().catchError((e) {});
 
     _board[lastMove.startRow][lastMove.startCol] = lastMove.piece;
     _board[lastMove.endRow][lastMove.endCol] = lastMove.capturedPiece;
@@ -639,6 +504,23 @@ class ChessBoardNotifier extends ChangeNotifier {
         _whiteKingPosition = [lastMove.startRow, lastMove.startCol];
       } else {
         _blackKingPosition = [lastMove.startRow, lastMove.startCol];
+      }
+    }
+
+    // If the undone move was a castling (king moved two columns), move the rook back
+    if (lastMove.piece.type == ChessPieceType.king &&
+        (lastMove.startCol - lastMove.endCol).abs() == 2) {
+      final kingRow = lastMove.startRow;
+      if (lastMove.endCol == 6) {
+        // Kingside: rook was at 5, move it back to 7
+        final rook = _board[kingRow][5];
+        _board[kingRow][7] = rook;
+        _board[kingRow][5] = null;
+      } else if (lastMove.endCol == 2) {
+        // Queenside: rook was at 3, move it back to 0
+        final rook = _board[kingRow][3];
+        _board[kingRow][0] = rook;
+        _board[kingRow][3] = null;
       }
     }
 
@@ -673,6 +555,23 @@ class ChessBoardNotifier extends ChangeNotifier {
       }
     }
 
+    // If this move is castling (king moved two columns), move the rook accordingly
+    if (move.piece.type == ChessPieceType.king &&
+        (move.startCol - move.endCol).abs() == 2) {
+      final kingRow = move.endRow;
+      if (move.endCol == 6) {
+        // Kingside: move rook from 7 to 5
+        final rook = _board[kingRow][7];
+        _board[kingRow][5] = rook;
+        _board[kingRow][7] = null;
+      } else if (move.endCol == 2) {
+        // Queenside: move rook from 0 to 3
+        final rook = _board[kingRow][0];
+        _board[kingRow][3] = rook;
+        _board[kingRow][0] = null;
+      }
+    }
+
     _isWhiteTurn = !_isWhiteTurn;
     _checkStatus = _isKingInCheck(!_isWhiteTurn);
     notifyListeners();
@@ -694,40 +593,16 @@ class ChessBoardNotifier extends ChangeNotifier {
   }
 
   bool _isKingInCheck(bool isWhiteKing) {
-    // Find the king's position
-    List<int> kingPosition = isWhiteKing
-        ? _whiteKingPosition
-        : _blackKingPosition;
-
-    // Loop through the whole chessboard and check if any piece can kill the king
-    for (var row = 0; row < 8; row++) {
-      for (var col = 0; col < 8; col++) {
-        // Skip empty squares and pieces of the same color
-        if (_board[row][col] == null ||
-            _board[row][col]!.isWhite == isWhiteKing) {
-          continue;
-        }
-        // if (_board[row][col] != null &&
-        //     _board[row][col]!.isWhite != isWhiteKing) {
-        var validMoves = _calculateRealValidMoves(
-          row,
-          col,
-          _board[row][col],
-          false,
-        );
-        if (validMoves.any(
-          (element) =>
-              element[0] == kingPosition[0] && element[1] == kingPosition[1],
-        )) {
-          return true;
-        }
-        // }
-      }
-    }
-    return false;
+    return ChessRules.isKingInCheck(
+      board: _board,
+      isWhiteKing: isWhiteKing,
+      whiteKingPosition: _whiteKingPosition,
+      blackKingPosition: _blackKingPosition,
+      moveHistory: _moveHistory,
+    );
   }
 
-  bool _isCheckMate(bool isWhiteKing) {
+  Future<bool> _isCheckMateAsync(bool isWhiteKing) async {
     // if the king is not in check, then it is not checkmate
     if (!_isKingInCheck(isWhiteKing)) {
       return false;
@@ -742,7 +617,8 @@ class ChessBoardNotifier extends ChangeNotifier {
           continue;
         }
 
-        List<List<int>> pieceValidMoves = _calculateRealValidMoves(
+        // Use the isolate-backed async move generator for expensive safety checks
+        final pieceValidMoves = await _calculateRealValidMovesAsync(
           row,
           col,
           _board[row][col],
